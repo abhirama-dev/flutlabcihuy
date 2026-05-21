@@ -1,0 +1,247 @@
+import 'package:flutter/material.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+final GlobalKey<ScaffoldMessengerState> messengerKey =
+    GlobalKey<ScaffoldMessengerState>();
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext _) {
+    return MaterialApp(
+      navigatorKey: navigatorKey,
+      scaffoldMessengerKey: messengerKey,
+      debugShowCheckedModeBanner: false,
+      title: 'Aplikasi CRUD SQLite',
+      theme: ThemeData(
+        primarySwatch: Colors.indigo,
+        useMaterial3: false, // Menjaga kompatibilitas style dengan linter lama
+      ),
+      home: const HomeScreen(),
+    );
+  }
+}
+
+class DatabaseHelper {
+  static Future<Database> db() async {
+    return openDatabase(
+      join(await getDatabasesPath(),
+          'catatan_db.db'), // Mengubah nama file db untuk mereset struktur yang korup
+      onCreate: (database, version) async {
+        await database.execute(
+          """CREATE TABLE catatan(
+            id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+            judul TEXT,
+            deskripsi TEXT,
+            createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+          )""",
+        );
+      },
+      version: 1,
+    );
+  }
+
+  static Future<int> createItem(String judul, String? deskripsi) async {
+    final db = await DatabaseHelper.db();
+    final data = {'judul': judul, 'deskripsi': deskripsi};
+    return await db.insert('catatan', data,
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  static Future<List<Map<String, dynamic>>> getItems() async {
+    final db = await DatabaseHelper.db();
+    return db.query('catatan', orderBy: "id DESC");
+  }
+
+  static Future<int> updateItem(int id, String judul, String? deskripsi) async {
+    final db = await DatabaseHelper.db();
+    final data = {
+      'judul': judul,
+      'deskripsi': deskripsi,
+      'createdAt': DateTime.now().toString()
+    };
+    return await db.update('catatan', data, where: "id = ?", whereArgs: [id]);
+  }
+
+  static Future<void> deleteItem(int id) async {
+    final db = await DatabaseHelper.db();
+    try {
+      await db.delete('catatan', where: "id = ?", whereArgs: [id]);
+    } catch (err) {
+      debugPrint("Gagal menghapus item: $err");
+    }
+  }
+}
+
+// ==========================================
+// KELAS INTERFACE (Tampilan UI)
+// ==========================================
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  List<Map<String, dynamic>> _catatanList = [];
+  bool _isLoading = true;
+
+  final TextEditingController _judulController = TextEditingController();
+  final TextEditingController _deskripsiController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshCatatan();
+  }
+
+  void _refreshCatatan() async {
+    try {
+      final data = await DatabaseHelper.getItems();
+      setState(() {
+        _catatanList = data;
+        _isLoading = false;
+      });
+    } catch (e) {
+      debugPrint("Error saat mengambil data: $e");
+      setState(() {
+        _isLoading =
+            false; // Menghentikan loading berputar jika terjadi error database
+      });
+    }
+  }
+
+  void _showForm(int? id) async {
+    if (id != null) {
+      final existingCatatan =
+          _catatanList.firstWhere((element) => element['id'] == id);
+      _judulController.text = existingCatatan['judul'];
+      _deskripsiController.text = existingCatatan['deskripsi'];
+    } else {
+      _judulController.text = '';
+      _deskripsiController.text = '';
+    }
+    
+    final validContext = navigatorKey.currentContext;
+    if (validContext == null) return;
+
+    showModalBottomSheet(
+      context: validContext,
+      elevation: 5,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        padding: EdgeInsets.only(
+          top: 15,
+          left: 15,
+          right: 15,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom +
+              120, // Menggunakan ctx lokal bawaan builder yang aman
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            TextField(
+              controller: _judulController,
+              decoration: const InputDecoration(hintText: 'Judul Catatan'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _deskripsiController,
+              decoration: const InputDecoration(hintText: 'Deskripsi'),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () async {
+                if (_judulController.text.trim().isEmpty) {
+                  messengerKey.currentState?.showSnackBar(const SnackBar(
+                    content: Text('Judul tidak boleh kosong!'),
+                  ));
+                  return;
+                }
+
+                if (id == null) {
+                  await DatabaseHelper.createItem(
+                      _judulController.text, _deskripsiController.text);
+                } else {
+                  await DatabaseHelper.updateItem(
+                      id, _judulController.text, _deskripsiController.text);
+                }
+
+                _judulController.text = '';
+                _deskripsiController.text = '';
+
+                navigatorKey.currentState?.pop();
+                _refreshCatatan();
+              },
+              child: Text(id == null ? 'Tambah Baru' : 'Perbarui'),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _deleteItem(int id) async {
+    await DatabaseHelper.deleteItem(id);
+    messengerKey.currentState?.showSnackBar(const SnackBar(
+      content: Text('Catatan berhasil dihapus!'),
+    ));
+    _refreshCatatan();
+  }
+
+  @override
+  Widget build(BuildContext _) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Aplikasi CRUD Flutter'),
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _catatanList.isEmpty
+              ? const Center(child: Text("Belum ada data, silakan tambah!"))
+              : ListView.builder(
+                  itemCount: _catatanList.length,
+                  itemBuilder: (ctx, index) => Card(
+                    color: Colors.blue[50],
+                    margin: const EdgeInsets.all(15),
+                    child: ListTile(
+                      title: Text(_catatanList[index]['judul'] ?? '',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(_catatanList[index]['deskripsi'] ?? ''),
+                      trailing: SizedBox(
+                        width: 100,
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit, color: Colors.blue),
+                              onPressed: () =>
+                                  _showForm(_catatanList[index]['id']),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () =>
+                                  _deleteItem(_catatanList[index]['id']),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+      floatingActionButton: FloatingActionButton(
+        child: const Icon(Icons.add),
+        onPressed: () => _showForm(null),
+      ),
+    );
+  }
+}
